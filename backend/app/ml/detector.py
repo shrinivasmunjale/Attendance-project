@@ -1,7 +1,9 @@
 """
-YOLO-based person and face detector.
-Uses YOLOv8 to detect persons in a frame, then crops face regions.
+YOLO-based person detector.
+Auto-downloads YOLOv8n weights on first run via ultralytics.
 """
+import logging
+import os
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -9,50 +11,100 @@ from typing import List, Tuple
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger("attendance.detector")
+
+
+def _ensure_yolo_model(path: str) -> str:
+    """
+    Return model path. If the file doesn't exist, let ultralytics
+    auto-download yolov8n.pt into the models_weights directory.
+    """
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        logger.info("YOLOv8 weights not found at %s — downloading...", path)
+        # ultralytics downloads to cwd by default; we move it after
+        model = YOLO("yolov8n.pt")
+        src = "yolov8n.pt"
+        if os.path.exists(src) and src != path:
+            os.rename(src, path)
+        logger.info("YOLOv8 weights saved to %s", path)
+        return path
+    return path
 
 
 class YOLODetector:
     def __init__(self):
-        self.model = YOLO(settings.yolo_model_path)
+        model_path = _ensure_yolo_model(settings.yolo_model_path)
+        self.model = YOLO(model_path)
         self.confidence = settings.yolo_confidence
-        # Class 0 = person in COCO dataset
-        self.person_class_id = 0
+        self.person_class_id = 0   # COCO class 0 = person
 
     def detect_persons(self, frame: np.ndarray) -> List[dict]:
         """
         Detect persons in a frame.
-        Returns list of dicts with bbox, confidence.
+        Returns list of dicts: {bbox, confidence, class}
         """
-        results = self.model(frame, conf=self.confidence, classes=[self.person_class_id])
+        results = self.model(
+            frame,
+            conf=self.confidence,
+            classes=[self.person_class_id],
+            verbose=False,
+        )
         detections = []
-
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
+                # Skip very small detections (likely noise)
+                if (x2 - x1) < 30 or (y2 - y1) < 60:
+                    continue
                 detections.append({
                     "bbox": (x1, y1, x2, y2),
                     "confidence": conf,
                     "class": "person",
                 })
-
         return detections
 
     def crop_face_region(
         self, frame: np.ndarray, bbox: Tuple[int, int, int, int]
     ) -> np.ndarray:
         """
-        Crop the upper-body/face region from a person bounding box.
-        Assumes face is in the top ~35% of the person bbox.
+        Crop the face region from a person bounding box.
+        Takes the top 35% of the person bbox as the face area.
         """
         x1, y1, x2, y2 = bbox
         height = y2 - y1
         face_y2 = y1 + int(height * 0.35)
+        # Clamp to frame bounds
+        face_y2 = min(face_y2, frame.shape[0])
+        x1 = max(0, x1)
+        x2 = min(x2, frame.shape[1])
         face_crop = frame[y1:face_y2, x1:x2]
         return face_crop
 
+    @staticmethod
+    def is_face_quality_ok(face_crop: np.ndarray, min_size: int = 40) -> bool:
+        """
+        Basic face quality check:
+        - Minimum size
+        - Not too blurry (Laplacian variance)
+        """
+        if face_crop is None or face_crop.size == 0:
+            return False
+        h, w = face_crop.shape[:2]
+        if h < min_size or w < min_size:
+            return False
+        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+        blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+        if blur_score < 20.0:   # too blurry
+            return False
+        return True
+
     def draw_detections(
-        self, frame: np.ndarray, detections: List[dict], labels: List[str] = None
+        self,
+        frame: np.ndarray,
+        detections: List[dict],
+        labels: List[str] = None,
     ) -> np.ndarray:
         """Draw bounding boxes and labels on frame."""
         annotated = frame.copy()
@@ -61,15 +113,18 @@ class YOLODetector:
             label = labels[i] if labels and i < len(labels) else "Unknown"
             conf = det["confidence"]
 
-            color = (0, 255, 0) if label != "Unknown" else (0, 0, 255)
+            # Green for identified, red for unknown
+            color = (0, 200, 0) if label not in ("Unknown", "Detecting...") else (0, 60, 220)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+
+            # Label background
+            text = f"{label} {conf:.0%}"
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.rectangle(annotated, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
             cv2.putText(
-                annotated,
-                f"{label} ({conf:.2f})",
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2,
+                annotated, text,
+                (x1 + 2, y1 - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (255, 255, 255), 1,
             )
         return annotated

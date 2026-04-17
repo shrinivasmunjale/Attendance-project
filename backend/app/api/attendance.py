@@ -1,5 +1,6 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import date
 from app.database import get_db
@@ -8,9 +9,27 @@ from app.models.student import Student
 from app.schemas.attendance import AttendanceCreate, AttendanceResponse, AttendanceSummary
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
+logger = logging.getLogger("attendance.api")
 
 
-@router.get("/", response_model=List[AttendanceResponse])
+def _enrich(record: Attendance) -> dict:
+    """Add student name/id string to an attendance record dict."""
+    data = {
+        "id": record.id,
+        "student_id": record.student.student_id if record.student else str(record.student_id),
+        "name": record.student.name if record.student else "Unknown",
+        "date": record.date,
+        "time_in": record.time_in,
+        "time_out": record.time_out,
+        "status": record.status,
+        "confidence": record.confidence,
+        "camera_id": record.camera_id,
+        "created_at": record.created_at,
+    }
+    return data
+
+
+@router.get("/")
 def list_attendance(
     date_filter: Optional[str] = Query(None, alias="date"),
     student_id: Optional[int] = None,
@@ -18,15 +37,16 @@ def list_attendance(
     limit: int = 200,
     db: Session = Depends(get_db),
 ):
-    """List attendance records with optional filters."""
-    query = db.query(Attendance)
+    """List attendance records with optional filters. Includes student name."""
+    query = db.query(Attendance).options(joinedload(Attendance.student))
 
     if date_filter:
         query = query.filter(Attendance.date == date_filter)
     if student_id:
         query = query.filter(Attendance.student_id == student_id)
 
-    return query.offset(skip).limit(limit).all()
+    records = query.offset(skip).limit(limit).all()
+    return [_enrich(r) for r in records]
 
 
 @router.get("/summary", response_model=AttendanceSummary)
@@ -58,7 +78,6 @@ def mark_attendance(record: AttendanceCreate, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    # Check if already marked today
     existing = (
         db.query(Attendance)
         .filter(
@@ -77,22 +96,44 @@ def mark_attendance(record: AttendanceCreate, db: Session = Depends(get_db)):
     return db_record
 
 
+@router.delete("/{record_id}")
+def delete_attendance(record_id: int, db: Session = Depends(get_db)):
+    """Delete an attendance record (admin correction)."""
+    record = db.query(Attendance).filter(Attendance.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    db.delete(record)
+    db.commit()
+    return {"message": "Record deleted"}
+
+
 @router.get("/export")
 def export_attendance(
     date_filter: str = Query(str(date.today()), alias="date"),
     db: Session = Depends(get_db),
 ):
-    """Export attendance as JSON for a given date."""
-    records = db.query(Attendance).filter(Attendance.date == date_filter).all()
-    result = []
-    for r in records:
-        student = db.query(Student).filter(Student.id == r.student_id).first()
-        result.append({
-            "student_id": student.student_id if student else "N/A",
-            "name": student.name if student else "N/A",
-            "date": r.date,
-            "status": r.status,
-            "time_in": str(r.time_in) if r.time_in else None,
-            "confidence": r.confidence,
-        })
-    return result
+    """Export full attendance report for a given date as JSON."""
+    records = (
+        db.query(Attendance)
+        .options(joinedload(Attendance.student))
+        .filter(Attendance.date == date_filter)
+        .all()
+    )
+    return [_enrich(r) for r in records]
+
+
+@router.get("/report/range")
+def attendance_range_report(
+    start: str = Query(..., description="Start date YYYY-MM-DD"),
+    end: str = Query(..., description="End date YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
+    """Get attendance records between two dates."""
+    records = (
+        db.query(Attendance)
+        .options(joinedload(Attendance.student))
+        .filter(Attendance.date >= start, Attendance.date <= end)
+        .order_by(Attendance.date)
+        .all()
+    )
+    return [_enrich(r) for r in records]

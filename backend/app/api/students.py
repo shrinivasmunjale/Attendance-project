@@ -70,6 +70,14 @@ def delete_student(student_id: int, db: Session = Depends(get_db)):
     return {"message": "Student deleted successfully"}
 
 
+@router.post("/rebuild-embeddings")
+def rebuild_embeddings():
+    """Rebuild face recognition embeddings from all registered student faces."""
+    recognizer = FaceRecognizer()
+    recognizer.build_embeddings()
+    return {"message": f"Embeddings rebuilt for {len(recognizer.embeddings)} students"}
+
+
 @router.post("/{student_id}/register-face")
 async def register_face(
     student_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)
