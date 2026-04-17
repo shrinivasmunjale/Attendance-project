@@ -7,16 +7,24 @@ function AddStudentModal({ onClose, onAdded }) {
   const [form, setForm] = useState({
     student_id: "", name: "", email: "", department: "", semester: "",
   });
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true);
     try {
       await createStudent({ ...form, semester: Number(form.semester) || null });
       toast.success("Student added");
       onAdded();
       onClose();
-    } catch {
-      toast.error("Failed to add student");
+    } catch (err) {
+      const msg =
+        err?.response?.data?.detail ||
+        err?.message ||
+        "Failed to add student";
+      toast.error(msg);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -47,8 +55,8 @@ function AddStudentModal({ onClose, onAdded }) {
             <button type="button" onClick={onClose} className="flex-1 border border-slate-300 text-slate-600 py-2 rounded-lg text-sm hover:bg-slate-50">
               Cancel
             </button>
-            <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm hover:bg-blue-700">
-              Add Student
+            <button type="submit" disabled={loading} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+              {loading ? "Adding..." : "Add Student"}
             </button>
           </div>
         </form>
@@ -71,8 +79,8 @@ export default function Students() {
       await deleteStudent(id);
       toast.success("Student deleted");
       load();
-    } catch {
-      toast.error("Failed to delete");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to delete");
     }
   };
 
@@ -89,8 +97,8 @@ export default function Students() {
         await registerFace(id, formData);
         toast.success("Face registered");
         load();
-      } catch {
-        toast.error("Face registration failed");
+      } catch (err) {
+        toast.error(err?.response?.data?.detail || "Face registration failed");
       }
     };
     input.click();

@@ -4,9 +4,10 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 pydantic-settings==2.2.1
 
-# Database
-sqlalchemy>=2.0.40
-alembic==1.13.1
+# MongoDB
+motor==3.6.0
+beanie==1.26.0
+pymongo==4.9.2
 
 # Auth
 python-jose[cryptography]==3.3.0

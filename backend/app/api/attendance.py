@@ -1,139 +1,124 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session, joinedload
+from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
-from datetime import date
-from app.database import get_db
-from app.models.attendance import Attendance
+from datetime import date, datetime
+from app.models.attendance import AttendanceRecord
 from app.models.student import Student
-from app.schemas.attendance import AttendanceCreate, AttendanceResponse, AttendanceSummary
+from app.schemas.attendance import AttendanceCreate, AttendanceSummary
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 logger = logging.getLogger("attendance.api")
 
 
-def _enrich(record: Attendance) -> dict:
-    """Add student name/id string to an attendance record dict."""
-    data = {
-        "id": record.id,
-        "student_id": record.student.student_id if record.student else str(record.student_id),
-        "name": record.student.name if record.student else "Unknown",
-        "date": record.date,
-        "time_in": record.time_in,
-        "time_out": record.time_out,
-        "status": record.status,
-        "confidence": record.confidence,
-        "camera_id": record.camera_id,
-        "created_at": record.created_at,
-    }
-    return data
-
-
 @router.get("/")
-def list_attendance(
+async def list_attendance(
     date_filter: Optional[str] = Query(None, alias="date"),
-    student_id: Optional[int] = None,
+    student_id: Optional[str] = None,
     skip: int = 0,
     limit: int = 200,
-    db: Session = Depends(get_db),
 ):
-    """List attendance records with optional filters. Includes student name."""
-    query = db.query(Attendance).options(joinedload(Attendance.student))
-
+    """List attendance records with optional filters."""
+    query = {}
     if date_filter:
-        query = query.filter(Attendance.date == date_filter)
+        query["date"] = date_filter
     if student_id:
-        query = query.filter(Attendance.student_id == student_id)
+        query["student_id"] = student_id
 
-    records = query.offset(skip).limit(limit).all()
-    return [_enrich(r) for r in records]
+    records = await AttendanceRecord.find(query).skip(skip).limit(limit).to_list()
+    return [_serialize(r) for r in records]
 
 
 @router.get("/summary", response_model=AttendanceSummary)
-def attendance_summary(
+async def attendance_summary(
     date_filter: str = Query(str(date.today()), alias="date"),
-    db: Session = Depends(get_db),
 ):
     """Get attendance summary for a specific date."""
-    total_students = db.query(Student).count()
-    records = db.query(Attendance).filter(Attendance.date == date_filter).all()
+    total_students = await Student.count()
+    records = await AttendanceRecord.find(AttendanceRecord.date == date_filter).to_list()
 
     present = sum(1 for r in records if r.status == "present")
-    late = sum(1 for r in records if r.status == "late")
-    absent = total_students - present - late
+    late    = sum(1 for r in records if r.status == "late")
+    absent  = max(0, total_students - present - late)
 
     return AttendanceSummary(
         date=date_filter,
         total_students=total_students,
         present=present,
-        absent=max(0, absent),
+        absent=absent,
         late=late,
     )
 
 
-@router.post("/", response_model=AttendanceResponse)
-def mark_attendance(record: AttendanceCreate, db: Session = Depends(get_db)):
+@router.post("/")
+async def mark_attendance(record: AttendanceCreate):
     """Manually mark attendance for a student."""
-    student = db.query(Student).filter(Student.id == record.student_id).first()
+    student = await Student.find_one(Student.student_id == record.student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    existing = (
-        db.query(Attendance)
-        .filter(
-            Attendance.student_id == record.student_id,
-            Attendance.date == record.date,
-        )
-        .first()
+    existing = await AttendanceRecord.find_one(
+        AttendanceRecord.student_id == record.student_id,
+        AttendanceRecord.date == record.date,
     )
     if existing:
         raise HTTPException(status_code=400, detail="Attendance already marked for today")
 
-    db_record = Attendance(**record.dict())
-    db.add(db_record)
-    db.commit()
-    db.refresh(db_record)
-    return db_record
+    db_record = AttendanceRecord(
+        student_id=record.student_id,
+        student_name=student.name,
+        date=record.date,
+        status=record.status,
+        confidence=record.confidence,
+        camera_id=record.camera_id,
+        time_in=datetime.utcnow(),
+    )
+    await db_record.insert()
+    return _serialize(db_record)
 
 
 @router.delete("/{record_id}")
-def delete_attendance(record_id: int, db: Session = Depends(get_db)):
-    """Delete an attendance record (admin correction)."""
-    record = db.query(Attendance).filter(Attendance.id == record_id).first()
+async def delete_attendance(record_id: str):
+    """Delete an attendance record."""
+    from beanie import PydanticObjectId
+    record = await AttendanceRecord.get(PydanticObjectId(record_id))
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
-    db.delete(record)
-    db.commit()
+    await record.delete()
     return {"message": "Record deleted"}
 
 
 @router.get("/export")
-def export_attendance(
+async def export_attendance(
     date_filter: str = Query(str(date.today()), alias="date"),
-    db: Session = Depends(get_db),
 ):
-    """Export full attendance report for a given date as JSON."""
-    records = (
-        db.query(Attendance)
-        .options(joinedload(Attendance.student))
-        .filter(Attendance.date == date_filter)
-        .all()
-    )
-    return [_enrich(r) for r in records]
+    """Export attendance for a given date."""
+    records = await AttendanceRecord.find(AttendanceRecord.date == date_filter).to_list()
+    return [_serialize(r) for r in records]
 
 
 @router.get("/report/range")
-def attendance_range_report(
+async def attendance_range_report(
     start: str = Query(..., description="Start date YYYY-MM-DD"),
-    end: str = Query(..., description="End date YYYY-MM-DD"),
-    db: Session = Depends(get_db),
+    end: str   = Query(..., description="End date YYYY-MM-DD"),
 ):
     """Get attendance records between two dates."""
-    records = (
-        db.query(Attendance)
-        .options(joinedload(Attendance.student))
-        .filter(Attendance.date >= start, Attendance.date <= end)
-        .order_by(Attendance.date)
-        .all()
-    )
-    return [_enrich(r) for r in records]
+    records = await AttendanceRecord.find(
+        AttendanceRecord.date >= start,
+        AttendanceRecord.date <= end,
+    ).sort("date").to_list()
+    return [_serialize(r) for r in records]
+
+
+def _serialize(r: AttendanceRecord) -> dict:
+    return {
+        "id":           str(r.id),
+        "student_id":   r.student_id,
+        "name":         r.student_name,
+        "date":         r.date,
+        "time_in":      r.time_in.isoformat() if r.time_in else None,
+        "time_out":     r.time_out.isoformat() if r.time_out else None,
+        "status":       r.status,
+        "confidence":   r.confidence,
+        "camera_id":    r.camera_id,
+        "created_at":   r.created_at.isoformat() if r.created_at else None,
+    }

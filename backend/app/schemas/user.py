@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 
 
@@ -10,20 +10,13 @@ class UserCreate(BaseModel):
 
 
 class UserResponse(BaseModel):
-    id: int
+    id: str
     username: str
     email: str
     role: str
     is_active: bool
 
-    class Config:
-        from_attributes = True
-
 
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-
-class TokenData(BaseModel):
-    username: Optional[str] = None

@@ -6,8 +6,9 @@ class Settings(BaseSettings):
     app_name: str = "Attendance System"
     debug: bool = False
 
-    # Database
-    database_url: str = "sqlite:///./attendance.db"
+    # MongoDB
+    mongodb_url: str = "mongodb://localhost:27017"
+    mongodb_db_name: str = "attendance_db"
 
     # JWT Auth
     secret_key: str = "change-this-secret-key"

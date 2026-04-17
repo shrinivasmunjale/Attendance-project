@@ -1,16 +1,16 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from app.database import get_db
 from app.models.user import User
-from app.schemas.user import UserCreate, UserResponse, Token, TokenData
+from app.schemas.user import UserCreate, UserResponse, Token
 from app.config import get_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+logger = logging.getLogger("attendance.auth")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -31,9 +31,7 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
-) -> User:
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -47,17 +45,19 @@ def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    user = db.query(User).filter(User.username == username).first()
+    user = await User.find_one(User.username == username)
     if user is None:
         raise credentials_exception
     return user
 
 
 @router.post("/register", response_model=UserResponse)
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user (admin/teacher)."""
-    if db.query(User).filter(User.username == user.username).first():
+async def register(user: UserCreate):
+    """Register a new user."""
+    if await User.find_one(User.username == user.username):
         raise HTTPException(status_code=400, detail="Username already taken")
+    if await User.find_one(User.email == user.email):
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     db_user = User(
         username=user.username,
@@ -65,27 +65,24 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         hashed_password=hash_password(user.password),
         role=user.role,
     )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+    await db_user.insert()
+    return UserResponse(**db_user.model_dump(), id=str(db_user.id))
 
 
 @router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """Login and get JWT token."""
-    user = db.query(User).filter(User.username == form_data.username).first()
+    user = await User.find_one(User.username == form_data.username)
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
         )
-
     token = create_access_token({"sub": user.username})
     return Token(access_token=token)
 
 
 @router.get("/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
-    """Get current logged-in user info."""
-    return current_user
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Get current logged-in user."""
+    return UserResponse(**current_user.model_dump(), id=str(current_user.id))

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
@@ -23,7 +23,7 @@ class StudentUpdate(BaseModel):
 
 
 class StudentResponse(StudentBase):
-    id: int
+    id: str
     face_registered: bool
     created_at: datetime
 

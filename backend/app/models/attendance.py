@@ -1,24 +1,19 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float
-from sqlalchemy.orm import relationship
+from beanie import Document, Indexed, Link
+from typing import Optional
 from datetime import datetime
-from app.database import Base
+from pydantic import Field
 
 
-class Attendance(Base):
-    __tablename__ = "attendance"
+class AttendanceRecord(Document):
+    student_id: str                          # student_id string (e.g. "STU001")
+    student_name: str = ""                   # denormalized for fast reads
+    date: Indexed(str)                       # "YYYY-MM-DD"
+    time_in: Optional[datetime] = None
+    time_out: Optional[datetime] = None
+    status: str = "present"                  # present / absent / late
+    confidence: Optional[float] = None
+    camera_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
-    date = Column(String, nullable=False)          # "YYYY-MM-DD"
-    time_in = Column(DateTime, nullable=True)
-    time_out = Column(DateTime, nullable=True)
-    status = Column(String, default="present")     # present / absent / late
-    confidence = Column(Float, nullable=True)      # face recognition confidence
-    camera_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    # Relationship
-    student = relationship("Student", back_populates="attendance_records")
-
-    def __repr__(self):
-        return f"<Attendance student_id={self.student_id} date={self.date}>"
+    class Settings:
+        name = "attendance"

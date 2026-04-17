@@ -1,77 +1,84 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from sqlalchemy.orm import Session
-from typing import List
+import logging
 import cv2
 import numpy as np
-from app.database import get_db
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from typing import List
+from datetime import datetime
 from app.models.student import Student
 from app.schemas.student import StudentCreate, StudentResponse, StudentUpdate
 from app.ml.recognizer import FaceRecognizer
 
 router = APIRouter(prefix="/students", tags=["students"])
+logger = logging.getLogger("attendance.students")
+
+
+def _to_response(s: Student) -> StudentResponse:
+    return StudentResponse(
+        id=str(s.id),
+        student_id=s.student_id,
+        name=s.name,
+        email=s.email,
+        department=s.department,
+        semester=s.semester,
+        face_registered=s.face_registered,
+        created_at=s.created_at,
+    )
 
 
 @router.post("/", response_model=StudentResponse)
-def create_student(student: StudentCreate, db: Session = Depends(get_db)):
+async def create_student(student: StudentCreate):
     """Create a new student."""
-    existing = db.query(Student).filter(Student.student_id == student.student_id).first()
+    existing = await Student.find_one(Student.student_id == student.student_id)
     if existing:
         raise HTTPException(status_code=400, detail="Student ID already exists")
 
-    db_student = Student(**student.dict())
-    db.add(db_student)
-    db.commit()
-    db.refresh(db_student)
-    return db_student
+    db_student = Student(**student.model_dump())
+    await db_student.insert()
+    logger.info("Student created: %s", student.student_id)
+    return _to_response(db_student)
 
 
 @router.get("/", response_model=List[StudentResponse])
-def list_students(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+async def list_students(skip: int = 0, limit: int = 100):
     """List all students."""
-    students = db.query(Student).offset(skip).limit(limit).all()
-    return students
+    students = await Student.find_all().skip(skip).limit(limit).to_list()
+    return [_to_response(s) for s in students]
 
 
 @router.get("/{student_id}", response_model=StudentResponse)
-def get_student(student_id: int, db: Session = Depends(get_db)):
-    """Get a specific student by ID."""
-    student = db.query(Student).filter(Student.id == student_id).first()
+async def get_student(student_id: str):
+    """Get a student by their string student_id (e.g. STU001)."""
+    student = await Student.find_one(Student.student_id == student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-    return student
+    return _to_response(student)
 
 
 @router.put("/{student_id}", response_model=StudentResponse)
-def update_student(
-    student_id: int, student_update: StudentUpdate, db: Session = Depends(get_db)
-):
+async def update_student(student_id: str, update: StudentUpdate):
     """Update student information."""
-    student = db.query(Student).filter(Student.id == student_id).first()
+    student = await Student.find_one(Student.student_id == student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    for key, value in student_update.dict(exclude_unset=True).items():
-        setattr(student, key, value)
-
-    db.commit()
-    db.refresh(student)
-    return student
+    update_data = update.model_dump(exclude_unset=True)
+    update_data["updated_at"] = datetime.utcnow()
+    await student.set(update_data)
+    return _to_response(student)
 
 
 @router.delete("/{student_id}")
-def delete_student(student_id: int, db: Session = Depends(get_db)):
+async def delete_student(student_id: str):
     """Delete a student."""
-    student = db.query(Student).filter(Student.id == student_id).first()
+    student = await Student.find_one(Student.student_id == student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-
-    db.delete(student)
-    db.commit()
+    await student.delete()
     return {"message": "Student deleted successfully"}
 
 
 @router.post("/rebuild-embeddings")
-def rebuild_embeddings():
+async def rebuild_embeddings():
     """Rebuild face recognition embeddings from all registered student faces."""
     recognizer = FaceRecognizer()
     recognizer.build_embeddings()
@@ -79,29 +86,22 @@ def rebuild_embeddings():
 
 
 @router.post("/{student_id}/register-face")
-async def register_face(
-    student_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)
-):
+async def register_face(student_id: str, file: UploadFile = File(...)):
     """Upload and register a student's face image."""
-    student = db.query(Student).filter(Student.id == student_id).first()
+    student = await Student.find_one(Student.student_id == student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    # Read image
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
     if img is None:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
-    # Register face
     recognizer = FaceRecognizer()
     success = recognizer.register_student_face(student.student_id, img)
+    if not success:
+        raise HTTPException(status_code=500, detail="Face registration failed")
 
-    if success:
-        student.face_registered = True
-        db.commit()
-        return {"message": "Face registered successfully"}
-
-    raise HTTPException(status_code=500, detail="Face registration failed")
+    await student.set({"face_registered": True, "updated_at": datetime.utcnow()})
+    return {"message": "Face registered successfully"}

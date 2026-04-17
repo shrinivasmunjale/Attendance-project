@@ -7,12 +7,18 @@ const instance = axios.create({
 
 // Attach JWT token to every request
 instance.interceptors.request.use((config) => {
-  const stored = localStorage.getItem("auth-storage");
-  if (stored) {
-    const { state } = JSON.parse(stored);
-    if (state?.token) {
-      config.headers.Authorization = `Bearer ${state.token}`;
+  try {
+    const stored = localStorage.getItem("auth-storage");
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Zustand persist wraps state under { state: { token: ... } }
+      const token = parsed?.state?.token ?? parsed?.token;
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
     }
+  } catch (e) {
+    console.warn("Could not read auth token:", e);
   }
   return config;
 });
