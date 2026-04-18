@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Direct Test</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            padding: 30px; 
+            background: #0f172a; 
+            color: white; 
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: #60a5fa; }
+        button { 
+            padding: 12px 24px; 
+            font-size: 16px; 
+            cursor: pointer; 
+            margin: 10px 5px; 
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        #log { 
+            background: #1e293b; 
+            padding: 20px; 
+            border-radius: 12px; 
+            margin-top: 20px; 
+            font-family: 'Consolas', monospace; 
+            font-size: 13px; 
+            max-height: 400px; 
+            overflow-y: auto; 
+            border: 2px solid #334155;
+        }
+        #video { 
+            max-width: 100%; 
+            border-radius: 12px; 
+            margin-top: 20px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .success { color: #22c55e; font-weight: 600; }
+        .error { color: #ef4444; font-weight: 600; }
+        .info { color: #60a5fa; }
+        .warning { color: #f59e0b; }
+        .status { 
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        .status.connected { background: #22c55e; color: white; }
+        .status.disconnected { background: #64748b; color: white; }
+        .fps { 
+            font-size: 24px; 
+            font-weight: 700; 
+            color: #22c55e;
+            margin-left: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎥 Direct WebSocket Camera Test</h1>
+    <p>
+        Backend: <span id="backend-status">Checking...</span>
+        <span id="ws-status" class="status disconnected">Disconnected</span>
+        <span id="fps-display" class="fps" style="display:none;">0 FPS</span>
+    </p>
+    
+    <div>
+        <button class="btn-primary" onclick="testBackend()">1. Test Backend</button>
+        <button class="btn-primary" onclick="testCamera()">2. Test Camera Status</button>
+        <button class="btn-primary" onclick="connectWS()">3. Connect WebSocket</button>
+        <button class="btn-danger" onclick="disconnectWS()">4. Disconnect</button>
+    </div>
+    
+    <img id="video" style="display:none;" />
+    <div id="log"></div>
+
+    <script>
+        let ws = null;
+        let frameCount = 0;
+        let fpsInterval = null;
+
+        function log(msg, type = 'info') {
+            const div = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML += `<div class="${type}">[${time}] ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            const statusEl = document.getElementById('ws-status');
+            const fpsEl = document.getElementById('fps-display');
+            if (connected) {
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'status connected';
+                fpsEl.style.display = 'inline';
+            } else {
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'status disconnected';
+                fpsEl.style.display = 'none';
+            }
+        }
+
+        async function testBackend() {
+            log('Testing backend health...', 'info');
+            try {
+                const res = await fetch('http://localhost:8000/health');
+                const data = await res.json();
+                log(`✅ Backend OK: ${JSON.stringify(data)}`, 'success');
+                document.getElementById('backend-status').innerHTML = '<span style="color:#22c55e">✅ Running</span>';
+            } catch (e) {
+                log(`❌ Backend error: ${e.message}`, 'error');
+                document.getElementById('backend-status').innerHTML = '<span style="color:#ef4444">❌ Not running</span>';
+            }
+        }
+
+        async function testCamera() {
+            log('Testing camera status...', 'info');
+            try {
+                const res = await fetch('http://localhost:8000/cameras/status');
+                const data = await res.json();
+                log(`Camera accessible: ${data.camera_accessible}, source: ${data.source}, active_streams: ${data.active_streams}`, data.camera_accessible ? 'success' : 'error');
+            } catch (e) {
+                log(`❌ Camera status error: ${e.message}`, 'error');
+            }
+        }
+
+        function connectWS() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('Already connected', 'warning');
+                return;
+            }
+
+            const url = 'ws://localhost:8000/cameras/stream';
+            log(`🔌 Connecting to: ${url}`, 'info');
+            log(`   Protocol: WebSocket`, 'info');
+            log(`   Target: Backend direct (no proxy)`, 'info');
+            
+            ws = new WebSocket(url);
+            frameCount = 0;
+
+            // Connection timeout
+            const timeout = setTimeout(() => {
+                if (ws.readyState !== WebSocket.OPEN) {
+                    log('⏱️ Connection timeout (8 seconds)', 'error');
+                    ws.close();
+                }
+            }, 8000);
+
+            ws.onopen = () => {
+                clearTimeout(timeout);
+                log('✅ WebSocket CONNECTED!', 'success');
+                updateStatus(true);
+                
+                // Start FPS counter
+                fpsInterval = setInterval(() => {
+                    document.getElementById('fps-display').textContent = `${frameCount} FPS`;
+                    frameCount = 0;
+                }, 1000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    
+                    if (msg.type === 'frame') {
+                        frameCount++;
+                        if (frameCount === 1) {
+                            log('✅ First frame received!', 'success');
+                            document.getElementById('video').style.display = 'block';
+                        }
+                        document.getElementById('video').src = 'data:image/jpeg;base64,' + msg.data;
+                    }
+                    
+                    if (msg.type === 'attendance_marked') {
+                        log(`🎓 Attendance: ${msg.name} (${msg.student_id}) - ${(msg.confidence * 100).toFixed(1)}%`, 'success');
+                    }
+                    
+                    if (msg.type === 'error') {
+                        log(`❌ Server error: ${msg.message}`, 'error');
+                    }
+                } catch (e) {
+                    log(`❌ Message parse error: ${e.message}`, 'error');
+                }
+            };
+
+            ws.onerror = (e) => {
+                clearTimeout(timeout);
+                log(`❌ WebSocket ERROR occurred`, 'error');
+                log(`   This usually means:`, 'warning');
+                log(`   1. Backend is not running on port 8000`, 'warning');
+                log(`   2. WebSocket endpoint doesn't exist`, 'warning');
+                log(`   3. CORS or firewall blocking connection`, 'warning');
+                console.error('WebSocket error details:', e);
+            };
+
+            ws.onclose = (e) => {
+                clearTimeout(timeout);
+                clearInterval(fpsInterval);
+                updateStatus(false);
+                
+                if (e.code === 1000) {
+                    log(`WebSocket closed normally`, 'info');
+                } else {
+                    log(`❌ WebSocket closed abnormally: code=${e.code}, reason="${e.reason || 'none'}"`, 'error');
+                    log(`   Common error codes:`, 'info');
+                    log(`   1006 = Connection failed/rejected`, 'info');
+                    log(`   1001 = Server going away`, 'info');
+                    log(`   1002 = Protocol error`, 'info');
+                }
+                ws = null;
+            };
+        }
+
+        function disconnectWS() {
+            if (ws) {
+                log('Disconnecting...', 'info');
+                ws.close(1000, 'User requested disconnect');
+            } else {
+                log('Not connected', 'warning');
+            }
+        }
+
+        // Auto-test backend on load
+        window.onload = () => {
+            testBackend();
+            log('='.repeat(60), 'info');
+            log('INSTRUCTIONS:', 'info');
+            log('1. Click "Test Backend" to verify API is running', 'info');
+            log('2. Click "Test Camera Status" to check camera access', 'info');
+            log('3. Click "Connect WebSocket" to start camera stream', 'info');
+            log('4. Watch for connection success and video feed', 'info');
+            log('='.repeat(60), 'info');
+        };
+    </script>
+</body>
+</html>

@@ -6,6 +6,17 @@ import logging
 import os
 import cv2
 import numpy as np
+
+# Fix for PyTorch 2.6+ weights_only restriction
+# Monkey-patch torch.load to use weights_only=False by default
+import torch
+_original_load = torch.load
+def _patched_load(*args, **kwargs):
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_load(*args, **kwargs)
+torch.load = _patched_load
+
 from ultralytics import YOLO
 from typing import List, Tuple
 from app.config import get_settings
@@ -48,7 +59,6 @@ class YOLODetector:
         logger.info("Loading YOLO model from %s ...", model_path)
         self.model = YOLO(model_path)
         # Warm up with a dummy frame so first real frame is fast
-        import numpy as np
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         self.model(dummy, verbose=False)
         logger.info("YOLO model ready ✅")

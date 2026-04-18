@@ -52,53 +52,84 @@ def _open_camera(source: str):
 @router.websocket("/stream")
 async def camera_stream(websocket: WebSocket):
     """WebSocket: streams annotated frames and fires attendance events."""
-    await manager.connect(websocket)
+    logger.info("WebSocket connection attempt from: %s", websocket.client)
+    
+    try:
+        await manager.connect(websocket)
+        logger.info("WebSocket connected successfully")
+    except Exception as e:
+        logger.error("WebSocket connection failed: %s", e)
+        raise
 
     async def on_attendance(student_id: str, confidence: float, frame):
-        student = await Student.find_one(Student.student_id == student_id)
-        if not student:
-            return
+        try:
+            student = await Student.find_one(Student.student_id == student_id)
+            if not student:
+                return
 
-        today = str(datetime.now().date())
-        existing = await AttendanceRecord.find_one(
-            AttendanceRecord.student_id == student_id,
-            AttendanceRecord.date == today,
-        )
-        if not existing:
-            record = AttendanceRecord(
-                student_id=student_id,
-                student_name=student.name,
-                date=today,
-                time_in=datetime.now(),
-                status="present",
-                confidence=confidence,
-                camera_id="main",
+            today = str(datetime.now().date())
+            existing = await AttendanceRecord.find_one(
+                AttendanceRecord.student_id == student_id,
+                AttendanceRecord.date == today,
             )
-            await record.insert()
-            logger.info("Attendance marked: %s conf=%.2f", student.name, confidence)
+            if not existing:
+                record = AttendanceRecord(
+                    student_id=student_id,
+                    student_name=student.name,
+                    date=today,
+                    time_in=datetime.now(),
+                    status="present",
+                    confidence=confidence,
+                    camera_id="main",
+                )
+                await record.insert()
+                logger.info("Attendance marked: %s conf=%.2f", student.name, confidence)
 
-        await manager.broadcast({
-            "type": "attendance_marked",
-            "student_id": student_id,
-            "name": student.name,
-            "confidence": confidence,
-        })
-
-    pipeline = AttendancePipeline(on_attendance=on_attendance)
+            await manager.broadcast({
+                "type": "attendance_marked",
+                "student_id": student_id,
+                "name": student.name,
+                "confidence": confidence,
+            })
+        except Exception as e:
+            logger.error("Error in on_attendance callback: %s", e, exc_info=True)
 
     try:
-        cap = _open_camera(settings.camera_source)
-    except RuntimeError as e:
-        await websocket.send_json({"type": "error", "message": str(e)})
+        pipeline = AttendancePipeline(on_attendance=on_attendance)
+        logger.info("Pipeline initialized")
+    except Exception as e:
+        logger.error("Pipeline initialization failed: %s", e, exc_info=True)
+        await websocket.send_json({"type": "error", "message": f"Pipeline error: {str(e)}"})
         manager.disconnect(websocket)
         return
 
     try:
+        cap = _open_camera(settings.camera_source)
+        logger.info("Camera opened successfully")
+    except RuntimeError as e:
+        logger.error("Camera open failed: %s", e)
+        await websocket.send_json({"type": "error", "message": str(e)})
+        manager.disconnect(websocket)
+        return
+    except Exception as e:
+        logger.error("Unexpected camera error: %s", e, exc_info=True)
+        await websocket.send_json({"type": "error", "message": f"Camera error: {str(e)}"})
+        manager.disconnect(websocket)
+        return
+
+    try:
+        logger.info("Starting frame streaming loop")
+        frame_count = 0
         while True:
             ret, frame = cap.read()
             if not ret:
+                logger.warning("Failed to read frame, retrying...")
                 await asyncio.sleep(0.1)
                 continue
+
+            frame_count += 1
+            if frame_count == 1:
+                logger.info("First frame captured successfully")
 
             annotated = await pipeline.process_frame(frame)
             _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
@@ -108,9 +139,9 @@ async def camera_stream(websocket: WebSocket):
             await asyncio.sleep(0.04)
 
     except WebSocketDisconnect:
-        logger.info("Client disconnected")
+        logger.info("Client disconnected normally")
     except Exception as e:
-        logger.error("Stream error: %s", e)
+        logger.error("Stream error: %s", e, exc_info=True)
         try:
             await websocket.send_json({"type": "error", "message": str(e)})
         except Exception:
@@ -118,6 +149,7 @@ async def camera_stream(websocket: WebSocket):
     finally:
         cap.release()
         manager.disconnect(websocket)
+        logger.info("WebSocket stream ended, camera released")
 
 
 @router.get("/status")

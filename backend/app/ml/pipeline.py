@@ -9,6 +9,15 @@ import logging
 from datetime import date
 from typing import Callable, Optional
 
+# Fix for PyTorch 2.6+ weights_only restriction (must be before importing detector)
+import torch
+_original_load = torch.load
+def _patched_load(*args, **kwargs):
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_load(*args, **kwargs)
+torch.load = _patched_load
+
 from app.ml.detector import YOLODetector
 from app.ml.recognizer import FaceRecognizer
 from app.ml.tracker import SimpleTracker

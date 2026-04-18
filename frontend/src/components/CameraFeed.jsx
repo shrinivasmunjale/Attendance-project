@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { useAttendanceStore } from "../store/attendanceStore";
 import toast from "react-hot-toast";
 
-// WebSocket goes through Vite proxy /ws → ws://localhost:8000
-// Falls back to direct connection if VITE_WS_URL is set (production)
+// Direct WebSocket connection to backend (bypassing Vite proxy)
+// Vite proxy has issues with WebSocket upgrades, so we connect directly
 const WS_URL =
   import.meta.env.VITE_WS_URL ||
-  `ws://${window.location.host}/ws/cameras/stream`;
+  "ws://localhost:8000/cameras/stream";
 
 export default function CameraFeed() {
   const imgRef = useRef(null);
@@ -32,6 +32,8 @@ export default function CameraFeed() {
 
     const url = WS_URL;
     console.log("[CameraFeed] Connecting to:", url);
+    console.log("[CameraFeed] Current host:", window.location.host);
+    console.log("[CameraFeed] Backend should be at: ws://localhost:8000/cameras/stream");
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

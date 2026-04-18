@@ -12,6 +12,19 @@ import numpy as np
 import pickle
 import urllib.request
 from typing import Optional, Tuple
+
+# Fix for PyTorch 2.6+ (in case ONNX runtime uses torch internally)
+try:
+    import torch
+    _original_load = torch.load
+    def _patched_load(*args, **kwargs):
+        if 'weights_only' not in kwargs:
+            kwargs['weights_only'] = False
+        return _original_load(*args, **kwargs)
+    torch.load = _patched_load
+except ImportError:
+    pass  # torch not installed, skip patch
+
 from app.config import get_settings
 
 settings = get_settings()
@@ -19,10 +32,13 @@ settings = get_settings()
 EMBEDDINGS_CACHE = "data/embeddings_cache.pkl"
 
 # Lightweight ArcFace ONNX model (~100 MB) from ONNX Model Zoo
-ARCFACE_MODEL_URL = (
-    "https://github.com/onnx/models/raw/main/validated/"
-    "vision/body_analysis/arcface/model/arcface-lresnet100e-opset8.onnx"
-)
+# Alternative URLs in case primary fails
+ARCFACE_MODEL_URLS = [
+    # Primary: ONNX Model Zoo (GitHub)
+    "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/arcface/model/arcface-lresnet100e-opset8.onnx",
+    # Backup: Direct from Hugging Face
+    "https://huggingface.co/datasets/Xenova/onnx-models/resolve/main/arcface_lresnet100e_opset8.onnx",
+]
 ARCFACE_MODEL_PATH = "models_weights/arcface.onnx"
 
 
@@ -31,9 +47,29 @@ def _download_model():
     if os.path.exists(ARCFACE_MODEL_PATH):
         return
     os.makedirs("models_weights", exist_ok=True)
+    
     print("[Recognizer] Downloading ArcFace ONNX model (~100 MB)...")
-    urllib.request.urlretrieve(ARCFACE_MODEL_URL, ARCFACE_MODEL_PATH)
-    print("[Recognizer] Download complete.")
+    
+    for url in ARCFACE_MODEL_URLS:
+        try:
+            print(f"[Recognizer] Trying: {url}")
+            # Use longer timeout and retry logic
+            import urllib.request
+            import socket
+            
+            # Set longer timeout
+            socket.setdefaulttimeout(300)  # 5 minutes
+            
+            urllib.request.urlretrieve(url, ARCFACE_MODEL_PATH)
+            print("[Recognizer] Download complete.")
+            return
+        except Exception as e:
+            print(f"[Recognizer] Download failed from {url}: {e}")
+            if os.path.exists(ARCFACE_MODEL_PATH):
+                os.remove(ARCFACE_MODEL_PATH)
+            continue
+    
+    raise RuntimeError("Failed to download ArcFace model from all sources")
 
 
 def _preprocess_face(face_img: np.ndarray) -> np.ndarray:
@@ -145,7 +181,12 @@ class FaceRecognizer:
                 img = cv2.imread(img_path)
                 if img is None:
                     continue
-                face = self.face_detector.detect_and_crop(img) or img
+                
+                # Try to detect and crop face, fallback to full image if detection fails
+                face = self.face_detector.detect_and_crop(img)
+                if face is None or face.size == 0:
+                    face = img
+                
                 emb = self._get_embedding(face)
                 if emb is not None:
                     student_embeddings.append(emb)
@@ -167,7 +208,11 @@ class FaceRecognizer:
         if face_crop is None or face_crop.size == 0:
             return None, 0.0
 
-        face = self.face_detector.detect_and_crop(face_crop) or face_crop
+        # Try to detect face in the crop, fallback to using the crop itself
+        face = self.face_detector.detect_and_crop(face_crop)
+        if face is None or face.size == 0:
+            face = face_crop
+        
         query_emb = self._get_embedding(face)
         if query_emb is None:
             return None, 0.0
