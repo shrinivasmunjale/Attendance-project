@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera WebSocket Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #1e293b; color: white; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 10px 5px; }
+        #log { background: #0f172a; padding: 15px; border-radius: 8px; margin-top: 20px; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; }
+        #video { max-width: 100%; border-radius: 8px; margin-top: 20px; }
+        .success { color: #22c55e; }
+        .error { color: #ef4444; }
+        .info { color: #3b82f6; }
+    </style>
+</head>
+<body>
+    <h1>🎥 Camera WebSocket Test</h1>
+    <p>Backend: <span id="backend-status">Checking...</span></p>
+    
+    <button onclick="testBackend()">1. Test Backend</button>
+    <button onclick="testCamera()">2. Test Camera Status</button>
+    <button onclick="connectWS()">3. Connect WebSocket</button>
+    <button onclick="disconnectWS()">4. Disconnect</button>
+    
+    <img id="video" style="display:none;" />
+    <div id="log"></div>
+
+    <script>
+        let ws = null;
+        let frameCount = 0;
+
+        function log(msg, type = 'info') {
+            const div = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML += `<div class="${type}">[${time}] ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+
+        async function testBackend() {
+            log('Testing backend health...', 'info');
+            try {
+                const res = await fetch('http://localhost:8000/health');
+                const data = await res.json();
+                log(`✅ Backend OK: ${JSON.stringify(data)}`, 'success');
+                document.getElementById('backend-status').textContent = '✅ Running';
+                document.getElementById('backend-status').style.color = '#22c55e';
+            } catch (e) {
+                log(`❌ Backend error: ${e.message}`, 'error');
+                document.getElementById('backend-status').textContent = '❌ Not running';
+                document.getElementById('backend-status').style.color = '#ef4444';
+            }
+        }
+
+        async function testCamera() {
+            log('Testing camera status...', 'info');
+            try {
+                const res = await fetch('http://localhost:8000/cameras/status');
+                const data = await res.json();
+                log(`Camera accessible: ${data.camera_accessible}, source: ${data.source}`, data.camera_accessible ? 'success' : 'error');
+            } catch (e) {
+                log(`❌ Camera status error: ${e.message}`, 'error');
+            }
+        }
+
+        function connectWS() {
+            if (ws) {
+                log('Already connected', 'info');
+                return;
+            }
+
+            const url = 'ws://localhost:8000/cameras/stream';
+            log(`Connecting to: ${url}`, 'info');
+            
+            ws = new WebSocket(url);
+            frameCount = 0;
+
+            ws.onopen = () => {
+                log('✅ WebSocket connected!', 'success');
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                
+                if (msg.type === 'frame') {
+                    frameCount++;
+                    if (frameCount === 1) {
+                        log('✅ First frame received!', 'success');
+                        document.getElementById('video').style.display = 'block';
+                    }
+                    if (frameCount % 30 === 0) {
+                        log(`Frames received: ${frameCount}`, 'info');
+                    }
+                    document.getElementById('video').src = 'data:image/jpeg;base64,' + msg.data;
+                }
+                
+                if (msg.type === 'attendance_marked') {
+                    log(`🎓 Attendance: ${msg.name} (${msg.student_id}) - ${(msg.confidence * 100).toFixed(1)}%`, 'success');
+                }
+                
+                if (msg.type === 'error') {
+                    log(`❌ Server error: ${msg.message}`, 'error');
+                }
+            };
+
+            ws.onerror = (e) => {
+                log(`❌ WebSocket error: ${e}`, 'error');
+            };
+
+            ws.onclose = (e) => {
+                log(`WebSocket closed: code=${e.code}, reason=${e.reason || 'none'}`, 'info');
+                ws = null;
+            };
+        }
+
+        function disconnectWS() {
+            if (ws) {
+                ws.close();
+                log('Disconnected', 'info');
+            }
+        }
+
+        // Auto-test backend on load
+        testBackend();
+    </script>
+</body>
+</html>

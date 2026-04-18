@@ -144,10 +144,10 @@ export default function Students() {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <button onClick={() => handleRegisterFace(s.id)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Register face">
+                    <button onClick={() => handleRegisterFace(s.student_id)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title="Register face">
                       <Camera size={15} />
                     </button>
-                    <button onClick={() => handleDelete(s.id)} className="p-1.5 text-red-400 hover:bg-red-50 rounded" title="Delete">
+                    <button onClick={() => handleDelete(s.student_id)} className="p-1.5 text-red-400 hover:bg-red-50 rounded" title="Delete">
                       <Trash2 size={15} />
                     </button>
                   </div>
