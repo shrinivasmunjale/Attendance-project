@@ -21,7 +21,13 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,8 +60,24 @@ async def _seed_admin():
 async def startup_event():
     await init_db()
     await _seed_admin()
+
+    # Pre-load YOLO model in background so first camera connection is instant
+    import asyncio
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _warmup_ml)
+
     logger.info("✅ Attendance System API running at http://localhost:8000")
     logger.info("📖 API docs: http://localhost:8000/docs")
+
+
+def _warmup_ml():
+    """Load and warm up YOLO detector at startup (runs in thread pool)."""
+    try:
+        from app.ml.detector import YOLODetector
+        YOLODetector()   # singleton — loads once, cached for all requests
+        logger.info("✅ YOLO model pre-loaded")
+    except Exception as e:
+        logger.warning("YOLO pre-load skipped: %s", e)
 
 
 @app.get("/")

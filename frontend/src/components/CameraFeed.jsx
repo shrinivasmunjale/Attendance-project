@@ -2,10 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { useAttendanceStore } from "../store/attendanceStore";
 import toast from "react-hot-toast";
 
-// Use relative WS URL so it works in both dev and Docker
+// WebSocket goes through Vite proxy /ws → ws://localhost:8000
+// Falls back to direct connection if VITE_WS_URL is set (production)
 const WS_URL =
   import.meta.env.VITE_WS_URL ||
-  `ws://${window.location.hostname}:8000/cameras/stream`;
+  `ws://${window.location.host}/ws/cameras/stream`;
 
 export default function CameraFeed() {
   const imgRef = useRef(null);
@@ -29,10 +30,22 @@ export default function CameraFeed() {
     if (wsRef.current) wsRef.current.close();
     setError(null);
 
-    const ws = new WebSocket(WS_URL);
+    const url = WS_URL;
+    console.log("[CameraFeed] Connecting to:", url);
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
+    // Timeout if no connection within 8 seconds
+    const timeout = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        ws.close();
+        setError("Connection timed out — is the backend running?");
+        setConnected(false);
+      }
+    }, 8000);
+
     ws.onopen = () => {
+      clearTimeout(timeout);
       setConnected(true);
       toast.success("Camera connected");
     };
@@ -56,10 +69,18 @@ export default function CameraFeed() {
       }
     };
 
-    ws.onclose = () => setConnected(false);
+    ws.onclose = (e) => {
+      clearTimeout(timeout);
+      setConnected(false);
+      if (e.code !== 1000) {
+        console.warn("[CameraFeed] WS closed:", e.code, e.reason);
+      }
+    };
 
-    ws.onerror = () => {
-      setError("Could not connect to camera stream");
+    ws.onerror = (e) => {
+      clearTimeout(timeout);
+      console.error("[CameraFeed] WS error:", e);
+      setError("Could not connect to camera stream. Check backend is running.");
       toast.error("Camera connection failed");
       setConnected(false);
     };

@@ -33,11 +33,28 @@ def _ensure_yolo_model(path: str) -> str:
 
 
 class YOLODetector:
+    _instance = None   # singleton so model loads once
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self):
+        if self._initialized:
+            return
         model_path = _ensure_yolo_model(settings.yolo_model_path)
+        logger.info("Loading YOLO model from %s ...", model_path)
         self.model = YOLO(model_path)
+        # Warm up with a dummy frame so first real frame is fast
+        import numpy as np
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        self.model(dummy, verbose=False)
+        logger.info("YOLO model ready ✅")
         self.confidence = settings.yolo_confidence
-        self.person_class_id = 0   # COCO class 0 = person
+        self.person_class_id = 0
+        self._initialized = True
 
     def detect_persons(self, frame: np.ndarray) -> List[dict]:
         """
