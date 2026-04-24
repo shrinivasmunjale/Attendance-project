@@ -15,7 +15,7 @@ Automated student attendance using CCTV cameras, YOLOv8 person detection, and De
 
 ## Quick Start
 
-### 1. Backend Setup
+### 1. Backend
 
 ```bash
 cd backend
